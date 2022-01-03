@@ -1,21 +1,22 @@
-#include <iostream>
+#define CATCH_CONFIG_MAIN
+#include <catch2/catch.hpp>
 #include <functional>
 #include <stdexcept>
 using namespace std;
 
 
-constexpr void assert_that(bool stmt, const char* msg) {
-	if (!stmt) throw std::runtime_error{ msg };
-}
+//constexpr void assert_that(bool stmt, const char* msg) {
+//	if (!stmt) throw std::runtime_error{ msg };
+//}
 
-void run_test(void(*unit_test)(), const char* name) {
-	try {
-		unit_test();
-		printf("[+] Test %s successful.\n", name);
-	} catch (const std::exception& e) {
-		printf("[-] Test failure in %s. %s.\n", name, e.what());
-	}
-}
+//void run_test(void(*unit_test)(), const char* name) {
+//	try {
+//		unit_test();
+//		printf("[+] Test %s successful.\n", name);
+//	} catch (const std::exception& e) {
+//		printf("[-] Test failure in %s. %s.\n", name, e.what());
+//	}
+//}
 
 struct SpeedUpdate {
 	double velocity_mps;
@@ -30,8 +31,10 @@ struct BrakeCommand {
 	double time2collision_s;
 };
 
+// Setup call backs
 typedef function<void(const SpeedUpdate&)> SpeedUpdateCallback;
 typedef function<void(const CarDetected&)> CarDetectedCallback;
+
 
 struct IServiceBus {
 	virtual ~IServiceBus() = default;
@@ -63,9 +66,11 @@ struct AutoBrake {
 	AutoBrake(IServiceBus& bus) :
 		collision_thresh_s{ 5 },
 		speed_mps{} {
-			bus.subscribe([this](const SpeedUpdate& update) {
-				speed_mps = update.velocity_mps;
+
+			bus.subscribe([this](const SpeedUpdate& su) {
+				speed_mps = su.velocity_mps;
 			});
+
 			bus.subscribe([this, &bus](const CarDetected& cd) {
 				auto relative_velocity_mps = speed_mps - cd.velocity_mps;
 				auto time_to_collision_s = cd.distance_m / relative_velocity_mps;
@@ -73,9 +78,7 @@ struct AutoBrake {
 					bus.publish(BrakeCommand{ time_to_collision_s });
 				}
 			});
-		}
-
-
+	}
 	void setCollisionThresh(double x) {
 		if (x < 1) {
 			throw std::runtime_error{ "Collision less than 1." };
@@ -94,73 +97,46 @@ private:
 	double speed_mps;
 };
 
-void initialSpeedIsZero() {
-	MockServiceBus bus{};
-	AutoBrake auto_brake{ bus };
-	assert_that(auto_brake.getSpeedMps() == 0L, "speed not equal to 0");
-}
 
-void initialSensitivityIs5() {
+TEST_CASE("AutoBrake") {
 	MockServiceBus bus{};
 	AutoBrake auto_brake{ bus };
-	assert_that(auto_brake.getCollisionThresh() == 5L, "sensitivity is not 5");
-}
 
-void sensitivityGreaterThan1() {
-	MockServiceBus bus{};
-	AutoBrake auto_brake{ bus };
-	try {
-		auto_brake.setCollisionThresh(0.5L);
-	} catch (std::exception& e) {
-		return;
+	SECTION("initial car speed is 0") {
+		REQUIRE(auto_brake.getSpeedMps() == Approx(0));
 	}
-	assert_that(false, "no exception thrown");
-}
 
-void speedIsSaved() {
-	MockServiceBus bus{};
-	AutoBrake auto_brake{ bus };
+	SECTION("initial sensitivity is 5") {
+		REQUIRE(auto_brake.getCollisionThresh() == Approx(5L));
+	}
 
-	bus.speed_update_callback(SpeedUpdate{ 100L });
-	assert_that(100L == auto_brake.getSpeedMps(), "speed not saved to 100");
-	bus.speed_update_callback(SpeedUpdate{ 50L });
-	assert_that(50L == auto_brake.getSpeedMps(), "speed not saved to 50");
-	bus.speed_update_callback(SpeedUpdate{ 0L });
-	assert_that(0L == auto_brake.getSpeedMps(), "speed not saved to 0");
-}
+	SECTION("sensitivity less than 1") {
+		REQUIRE_THROWS(auto_brake.setCollisionThresh(0.5L));
+	}
 
-void alertWhenImminent() {
-	MockServiceBus bus{};
-	AutoBrake auto_brake{ bus };
-	auto_brake.setCollisionThresh(10L);
+	SECTION("speed is saved after update") {
+		bus.speed_update_callback(SpeedUpdate{ 100L });
+		REQUIRE(100L == auto_brake.getSpeedMps());
+		bus.speed_update_callback(SpeedUpdate{ 50L });
+		REQUIRE(50L == auto_brake.getSpeedMps());
+		bus.speed_update_callback(SpeedUpdate{ 0L });
+		REQUIRE(0L == auto_brake.getSpeedMps());
+	}
 
-	bus.speed_update_callback(SpeedUpdate{ 100L });
-	bus.car_detected_callback(CarDetected{ 100L, 0L });
-	assert_that(bus.commands_published == 1, "1 brake command was not published");
-	assert_that(bus.last_command.time2collision_s == 1L, "time to collision not computed correctly");
-}
+	SECTION("no alert when not imminent") {
+		auto_brake.setCollisionThresh(2L);
 
-void no_alert_when_not_imminent() {
-	MockServiceBus bus{};
-	AutoBrake auto_brake{ bus };
-	auto_brake.setCollisionThresh(2L);
-	bus.speed_update_callback(SpeedUpdate{ 100L });
-	bus.car_detected_callback(CarDetected{ 1000L, 50L });
-	assert_that(bus.commands_published == 0, "brake commands were published");
-}
+		bus.speed_update_callback(SpeedUpdate{ 100L });
+		bus.car_detected_callback(CarDetected{ 1000L, 50L });
+		REQUIRE(bus.commands_published == 0);
+	}
 
-int main() {
-	cout << "" << endl;
+	SECTION("alert when imminent") {
+		auto_brake.setCollisionThresh(10L);
 
-	assert_that(1 + 2 > 2, "Something is wrong in the universe!");
-//	assert_that(24 == 42, "This assertion will generate an exception");
-
-	run_test(initialSpeedIsZero, "initial speed is 0");
-	run_test(initialSensitivityIs5, "initial sensitivity is 5");
-	run_test(sensitivityGreaterThan1, "sensitivity greater than 1");
-	run_test(speedIsSaved, "speed is saved");
-	run_test(no_alert_when_not_imminent, "no alert when not imminent");
-	run_test(alertWhenImminent, "alert when imminent");
-
-	return 0;
+		bus.speed_update_callback(SpeedUpdate{ 100L });
+		bus.car_detected_callback(CarDetected{ 100L, 0L });
+		REQUIRE(bus.commands_published == 1);
+		REQUIRE(bus.last_command.time2collision_s == Approx(1L));
+	}
 }
